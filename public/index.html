@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Push Test</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#111111">
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 20px; max-width: 480px; margin: auto; }
+    button { display: block; width: 100%; padding: 14px; margin: 10px 0; font-size: 17px; }
+    pre, textarea { background: #f2f2f2; padding: 8px; font-size: 12px; width: 100%; box-sizing: border-box; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Push Test</h1>
+  <button id="enable">Enable notifications</button>
+  <button id="send">Send test push (10s delay)</button>
+
+  <h3>Status</h3>
+  <pre id="status">checking…</pre>
+
+  <h3>Log</h3>
+  <pre id="log"></pre>
+
+  <h3>Subscription (for laptop curl)</h3>
+  <textarea id="sub" rows="5" readonly></textarea>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = m => { $('log').textContent = new Date().toLocaleTimeString() + '  ' + m + '\n' + $('log').textContent; };
+
+function b64ToU8(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+async function refresh() {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  let subscribed = false;
+  if (supported) {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    subscribed = !!sub;
+    if (sub) { localStorage.setItem('sub', JSON.stringify(sub)); }
+  }
+  $('status').textContent =
+    'Push supported:  ' + supported + '\n' +
+    'Installed (standalone): ' + standalone + '\n' +
+    'Permission:      ' + (supported ? Notification.permission : 'n/a') + '\n' +
+    'Subscribed:      ' + (subscribed ? 'yes' : 'no');
+  $('sub').value = localStorage.getItem('sub') || '';
+}
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then(refresh, e => log('SW register failed: ' + e));
+
+$('enable').onclick = async () => {
+  try {
+    const perm = await Notification.requestPermission();   // must be first, directly in the tap
+    log('Permission: ' + perm);
+    if (perm !== 'granted') return refresh();
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await (await fetch('/api/key')).json();
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) });
+    localStorage.setItem('sub', JSON.stringify(sub));
+    log('Subscribed OK');
+  } catch (e) { log('ERROR: ' + e.message); }
+  refresh();
+};
+
+$('send').onclick = async () => {
+  const sub = localStorage.getItem('sub');
+  if (!sub) return log('No subscription. Tap Enable first.');
+  log('Request sent. CLOSE THE APP NOW. Push arrives in ~10s.');
+  try {
+    const r = await fetch('/api/send', {
+      method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscription: JSON.parse(sub), delay: 10 })
+    });
+    log('Server replied: ' + await r.text());
+  } catch (e) { log('Fetch interrupted (expected if you closed the app)'); }
+};
+</script>
+</body>
+</html>
